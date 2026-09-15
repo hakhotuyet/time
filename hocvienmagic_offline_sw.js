@@ -1,6 +1,6 @@
 const CACHE = 'hocvienmagic-offline-v1';
 const SAME_ORIGIN = [
-  './index.html',
+  './hocvienmagic_fixed.html',
   './'
 ];
 const EXTERNAL = [

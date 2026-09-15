@@ -1209,12 +1209,14 @@
             <!-- Tab Switcher Inside Modal -->
             <div class="flex bg-[#ece0c4] p-1 rounded-xl border border-[#dbc9a4]">
                 <button id="modal-tab-study" onclick="switchLevelPreviewTab('study')" class="flex-1 py-2 text-xs font-bold rounded-lg transition bg-blue-700 text-white shadow flex items-center justify-center gap-2">
-                    <span>🎓</span> Cấp Độ Học Tập (13 Cấp)
+                    <span>🎓</span> Cấp Độ Học Tập
                 </button>
                 <button id="modal-tab-break" onclick="switchLevelPreviewTab('break')" class="flex-1 py-2 text-xs font-bold rounded-lg transition text-[#8f8168] hover:text-[#4a3d2e] flex items-center justify-center gap-2">
-                    <span>☯️</span> Thang Cảnh Giới Tu Tiên (10 Cảnh Giới)
+                    <span>☯️</span> Thang Cảnh Giới Tu Tiên
                 </button>
             </div>
+
+            <div class="bg-[#f2e8d3] border border-[#e0d2b4] rounded-xl px-3 py-2 text-[11px] text-[#8f8168]">💡 Mỗi cấp vẫn tự có số thứ tự <strong>Level/Cảnh</strong>. Khi thêm, xóa hoặc sửa mốc giờ, hệ thống tự sắp xếp và đánh lại số thứ tự.</div>
 
             <!-- Content Container: Study Levels -->
             <div id="preview-content-study" class="space-y-3">
@@ -1258,6 +1260,7 @@
         const STORAGE_KEY_LOGS = 'bkut_magic_timer_logs_v2';
         const STORAGE_KEY_SEMESTERS = 'bkut_magic_semesters_v1';
         const STORAGE_KEY_CURRENT_SEMESTER = 'bkut_magic_current_semester_v1';
+        const STORAGE_KEY_LEVELS = 'bkut_magic_level_config_v1';
         const STORAGE_KEY_PLAN = 'bkut_magic_plan_v1';
         const STORAGE_KEY_ALARM_SOUNDS = 'bkut_magic_alarm_sounds_v1';
         const STORAGE_KEY_SELECTED_ALARM_STUDY = 'bkut_magic_selected_alarm_study_v1';
@@ -1330,8 +1333,8 @@
         let courseChartObj = null;
         let ratioChartObj = null;
 
-        /* LEVEL DEFINITIONS EXACTLY AS REQUESTED */
-        const STUDY_LEVELS = [
+        /* LEVEL DEFINITIONS: defaults remain unchanged; user can customize/persist */
+        const DEFAULT_STUDY_LEVELS = [
             { min: 0, max: 5, name: 'Lv 1: Tập Sự Khởi Đầu', caption: 'Bắt đầu xây dựng kỷ luật, làm quen với guồng quay học tập.' },
             { min: 5, max: 15, name: 'Lv 2: Học Viên Cần Mẫn', caption: 'Vượt qua rào cản lười biếng ban đầu, duy trì sự kiên trì.' },
             { min: 15, max: 35, name: 'Lv 3: Tri Thức Sơ Cơ', caption: 'Mở rộng vốn hiểu biết nền tảng, hình thành phản xạ tập trung.' },
@@ -1347,7 +1350,7 @@
             { min: 9500, max: Infinity, name: 'Lv 13: Gauss & Euler', caption: 'Vượt ra biên giới của hiện tại' }
         ];
 
-        const BREAK_LEVELS = [
+        const DEFAULT_BREAK_LEVELS = [
             { min: 0, max: 10, name: 'Cảnh giới 1: Luyện Khí', caption: 'Bắt đầu hấp thu linh khí giải trí, thư giãn tâm trí.' },
             { min: 10, max: 30, name: 'Cảnh giới 2: Trúc Cơ', caption: 'Đặt nền móng xả hơi, đả thông kinh mạch sau giờ học căng thẳng.' },
             { min: 30, max: 70, name: 'Cảnh giới 3: Kết Đan', caption: 'Ngưng tụ linh lực thư thái, hình thành thói quen giải trí có độ dừng.' },
@@ -1359,6 +1362,55 @@
             { min: 2500, max: 5000, name: 'Cảnh giới 9: Thiên Tiên', caption: 'Phi Thăng Thiên Giới, cực kỳ hiếm người đạt tới mốc giờ chơi này.' },
             { min: 5000, max: Infinity, name: 'Cảnh giới 10: Chân Tiên', caption: 'Bất tử bất diệt, đỉnh cao Cảnh Giới Tu Tiên.' }
         ];
+
+        let STUDY_LEVELS = DEFAULT_STUDY_LEVELS.map(x => ({...x}));
+        let BREAK_LEVELS = DEFAULT_BREAK_LEVELS.map(x => ({...x}));
+
+        function normalizeLevelList(raw, fallback) {
+            if (!Array.isArray(raw) || raw.length === 0) return fallback.map(x => ({...x}));
+            const clean = raw.map((x, i) => ({
+                min: Math.max(0, Number(x.min) || 0),
+                name: String(x.name ?? '').trim() || `Cấp ${i + 1}`,
+                caption: String(x.caption ?? '').trim()
+            })).filter(x => Number.isFinite(x.min));
+            if (!clean.length) return fallback.map(x => ({...x}));
+            clean.sort((a,b) => a.min - b.min);
+            if (clean[0].min !== 0) clean.unshift({min:0, name:fallback[0]?.name || 'Cấp 1', caption:fallback[0]?.caption || ''});
+            return clean.map((x, i) => {
+                const next = clean[i + 1];
+                return {...x, max: next ? next.min : Infinity};
+            });
+        }
+
+        function getPersistableLevels(levels) {
+            return (levels || []).map(({min, name, caption}) => ({min, name, caption}));
+        }
+
+        function loadLevelConfig() {
+            let raw = null;
+            try { raw = userData?.studyLevels || null; } catch (_) {}
+            if (!raw) {
+                try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY_LEVELS) || 'null')?.studyLevels || null; } catch (_) {}
+            }
+            let rawBreak = null;
+            try { rawBreak = userData?.breakLevels || null; } catch (_) {}
+            if (!rawBreak) {
+                try { rawBreak = JSON.parse(localStorage.getItem(STORAGE_KEY_LEVELS) || 'null')?.breakLevels || null; } catch (_) {}
+            }
+            STUDY_LEVELS = normalizeLevelList(raw, DEFAULT_STUDY_LEVELS);
+            BREAK_LEVELS = normalizeLevelList(rawBreak, DEFAULT_BREAK_LEVELS);
+        }
+
+        function saveLevelConfig() {
+            const payload = {
+                studyLevels: getPersistableLevels(STUDY_LEVELS),
+                breakLevels: getPersistableLevels(BREAK_LEVELS)
+            };
+            userData.studyLevels = payload.studyLevels;
+            userData.breakLevels = payload.breakLevels;
+            localStorage.setItem(STORAGE_KEY_LEVELS, JSON.stringify(payload));
+            saveData(STORAGE_KEY_USER, userData);
+        }
 
         /* ============================================================
            CLOUD SYNC (Firebase Realtime Database) + MULTI-USER PIN AUTH
@@ -1853,6 +1905,7 @@
             if (cloudData.userData) {
                 userData = Object.assign({}, cloudData.userData);
             }
+            loadLevelConfig();
             const merged = getMergedTimeFromCloud(Object.assign({}, cloudData, { timeSync }));
             applyMergedTimeToLocal(merged || { studySeconds: timeSync.base?.studySeconds || 0, breakSeconds: timeSync.base?.breakSeconds || 0, logs: timeSync.base?.logs || {} });
             loadAllData();
@@ -2064,6 +2117,7 @@
 
                 const rawUser = localStorage.getItem(STORAGE_KEY_USER);
                 if (rawUser) userData = Object.assign(userData, JSON.parse(rawUser));
+                loadLevelConfig();
 
                 const rawPresets = localStorage.getItem(STORAGE_KEY_PRESETS);
                 customPresets = rawPresets ? JSON.parse(rawPresets) : [];
@@ -3021,50 +3075,128 @@
         function renderModalLevelLists() {
             const studyListContainer = document.getElementById('modal-study-levels-list');
             const breakListContainer = document.getElementById('modal-break-levels-list');
-
             const currentStudyHours = userData.studyXP / 3600;
             const currentBreakHours = userData.breakXP / 3600;
 
-            // Render Study Levels
-            studyListContainer.innerHTML = STUDY_LEVELS.map((lvl, idx) => {
-                const rangeText = lvl.max === Infinity ? `(${lvl.min}h+)` : `(${lvl.min}h - ${lvl.max}h)`;
-                const isCurrent = currentStudyHours >= lvl.min && currentStudyHours < lvl.max;
+            const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+            const renderLevelRow = (lvl, idx, type, hours, accent) => {
+                const isCurrent = hours >= lvl.min && hours < lvl.max;
+                const title = escapeHtml(lvl.name);
+                const caption = escapeHtml(lvl.caption);
+                const rangeText = lvl.max === Infinity ? `${lvl.min}h+` : `${lvl.min}h – ${lvl.max}h`;
+                const numberLabel = type === 'study' ? `Lv ${idx + 1}` : `Cảnh ${idx + 1}`;
+                const editFn = type === 'study' ? 'editStudyLevel' : 'editBreakLevel';
+                const deleteFn = type === 'study' ? 'deleteStudyLevel' : 'deleteBreakLevel';
+                const rowClass = accent === 'blue'
+                    ? (isCurrent ? 'border-blue-500 bg-blue-50/70 shadow-sm' : 'border-[#e0d2b4] bg-white')
+                    : (isCurrent ? 'border-emerald-500 bg-emerald-50/70 shadow-sm' : 'border-[#e0d2b4] bg-white');
+                const badgeClass = accent === 'blue'
+                    ? (isCurrent ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-800')
+                    : (isCurrent ? 'bg-emerald-600 text-white' : 'bg-emerald-100 text-emerald-800');
+                const titleClass = accent === 'blue'
+                    ? (isCurrent ? 'text-blue-900' : 'text-[#4a3d2e]')
+                    : (isCurrent ? 'text-emerald-900' : 'text-[#4a3d2e]');
+                const accentTextClass = accent === 'blue' ? 'text-blue-600' : 'text-emerald-600';
+                const currentPillClass = accent === 'blue' ? 'bg-blue-700' : 'bg-emerald-700';
                 return `
-                    <div class="p-3 rounded-xl border ${isCurrent ? 'border-blue-500 bg-blue-50/70 shadow-sm' : 'border-[#e0d2b4] bg-white'} flex items-center gap-3">
-                        <div class="w-10 h-10 rounded-lg ${isCurrent ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-800'} font-bold flex items-center justify-center text-xs shrink-0">
-                            Lv ${idx + 1}
+                    <div class="p-3 rounded-xl border ${rowClass} flex items-start gap-3">
+                        <div class="w-10 h-10 rounded-lg ${badgeClass} font-bold flex items-center justify-center text-xs shrink-0">
+                            ${numberLabel}
                         </div>
                         <div class="flex-1 min-w-0">
-                            <h4 class="text-xs font-bold ${isCurrent ? 'text-blue-900' : 'text-[#4a3d2e]'}">
-                                ${lvl.name} <span class="text-[10px] text-blue-600 font-semibold">${rangeText}</span>
-                                ${isCurrent ? '<span class="ml-1 text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded">ĐANG ĐẠT</span>' : ''}
-                            </h4>
-                            <p class="text-[11px] text-[#8f8168] mt-0.5">${lvl.caption}</p>
+                            <div class="flex items-start justify-between gap-2">
+                                <h4 class="text-xs font-bold ${titleClass}">
+                                    ${title} <span class="text-[10px] ${accentTextClass} font-semibold">(${rangeText})</span>
+                                    ${isCurrent ? `<span class="ml-1 text-[9px] ${currentPillClass} text-white px-1.5 py-0.5 rounded">ĐANG ĐẠT</span>` : ''}
+                                </h4>
+                                <div class="flex items-center gap-1 shrink-0">
+                                    <button onclick="${editFn}(${idx})" class="px-2 py-1 rounded-md border border-[#d3c2a0] bg-[#f8f1e2] hover:bg-[#ece0c4] text-[10px] font-bold text-[#4a3d2e]" title="Sửa tên, chú thích và số giờ">✏️</button>
+                                    <button onclick="${deleteFn}(${idx})" class="px-2 py-1 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold text-rose-700" title="Xóa cấp độ">🗑️</button>
+                                </div>
+                            </div>
+                            <p class="text-[11px] text-[#8f8168] mt-0.5">${caption || 'Chưa có chú thích.'}</p>
+                            <p class="text-[10px] text-[#8f8168] mt-1">Đạt từ <strong>${lvl.min} giờ</strong>${lvl.max === Infinity ? '' : ` đến trước ${lvl.max} giờ`}.</p>
                         </div>
                     </div>
                 `;
-            }).join('');
+            };
 
-            // Render Break Levels
-            breakListContainer.innerHTML = BREAK_LEVELS.map((lvl, idx) => {
-                const rangeText = lvl.max === Infinity ? `(${lvl.min}h+)` : `(${lvl.min}h - ${lvl.max}h)`;
-                const isCurrent = currentBreakHours >= lvl.min && currentBreakHours < lvl.max;
-                return `
-                    <div class="p-3 rounded-xl border ${isCurrent ? 'border-emerald-500 bg-emerald-50/70 shadow-sm' : 'border-[#e0d2b4] bg-white'} flex items-center gap-3">
-                        <div class="w-10 h-10 rounded-lg ${isCurrent ? 'bg-emerald-600 text-white' : 'bg-emerald-100 text-emerald-800'} font-bold flex items-center justify-center text-xs shrink-0">
-                            Cảnh ${idx + 1}
-                        </div>
-                        <div class="flex-1 min-w-0">
-                            <h4 class="text-xs font-bold ${isCurrent ? 'text-emerald-900' : 'text-[#4a3d2e]'}">
-                                ${lvl.name} <span class="text-[10px] text-emerald-600 font-semibold">${rangeText}</span>
-                                ${isCurrent ? '<span class="ml-1 text-[9px] bg-emerald-700 text-white px-1.5 py-0.5 rounded">ĐANG ĐẠT</span>' : ''}
-                            </h4>
-                            <p class="text-[11px] text-[#8f8168] mt-0.5">${lvl.caption}</p>
-                        </div>
-                    </div>
-                `;
-            }).join('');
+            studyListContainer.innerHTML = STUDY_LEVELS.map((lvl, idx) => renderLevelRow(lvl, idx, 'study', currentStudyHours, 'blue')).join('') + `
+                <button onclick="addLevel('study')" class="w-full px-3 py-2.5 rounded-xl border border-dashed border-blue-300 bg-blue-50/50 hover:bg-blue-100 text-blue-800 text-xs font-bold transition">➕ Thêm Cấp Độ Học Tập</button>`;
+
+            breakListContainer.innerHTML = BREAK_LEVELS.map((lvl, idx) => renderLevelRow(lvl, idx, 'break', currentBreakHours, 'emerald')).join('') + `
+                <button onclick="addLevel('break')" class="w-full px-3 py-2.5 rounded-xl border border-dashed border-emerald-300 bg-emerald-50/50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold transition">➕ Thêm Cảnh Giới Tu Tiên</button>`;
         }
+
+        function getLevelArrayByType(type) {
+            return type === 'study' ? STUDY_LEVELS : BREAK_LEVELS;
+        }
+
+        function saveLevelArray(type, levels) {
+            const normalized = normalizeLevelList(levels, type === 'study' ? DEFAULT_STUDY_LEVELS : DEFAULT_BREAK_LEVELS);
+            if (type === 'study') STUDY_LEVELS = normalized;
+            else BREAK_LEVELS = normalized;
+            saveLevelConfig();
+            updateUserProfileUI();
+            renderModalLevelLists();
+        }
+
+        function addLevel(type) {
+            const levels = getLevelArrayByType(type);
+            const label = type === 'study' ? 'Cấp độ Học Tập' : 'Cảnh giới Tu Tiên';
+            const hours = Number(prompt(`Số giờ đạt ${label} mới:`, String(levels[levels.length - 1]?.min + 1 || 1)));
+            if (!Number.isFinite(hours) || hours < 0) return;
+            if (levels.some(l => Math.abs(l.min - hours) < 1e-9)) {
+                showToast('Không thể thêm', 'Mốc giờ này đã tồn tại.', 'warning');
+                return;
+            }
+            const name = prompt(`Tên ${label}:`, type === 'study' ? `Cấp độ mới` : `Cảnh giới mới`);
+            if (name === null || !name.trim()) return;
+            const caption = prompt('Chú thích:', 'Mô tả cho cấp độ này.');
+            if (caption === null) return;
+            levels.push({ min: hours, name: name.trim(), caption: caption.trim() });
+            saveLevelArray(type, levels);
+            showToast('Đã Thêm', `${label} mới đã được thêm tại mốc ${hours} giờ.`, 'success');
+        }
+
+        function editLevel(type, index) {
+            const levels = getLevelArrayByType(type);
+            const lvl = levels[index];
+            if (!lvl) return;
+            const label = type === 'study' ? 'Cấp độ Học Tập' : 'Cảnh giới Tu Tiên';
+            const name = prompt(`Sửa tên ${label}:`, lvl.name);
+            if (name === null || !name.trim()) return;
+            const caption = prompt('Sửa chú thích:', lvl.caption);
+            if (caption === null) return;
+            const hours = Number(prompt('Số giờ đạt cấp này:', String(lvl.min)));
+            if (!Number.isFinite(hours) || hours < 0) return;
+            if (levels.some((l, i) => i !== index && Math.abs(l.min - hours) < 1e-9)) {
+                showToast('Không thể lưu', 'Mốc giờ này đã được dùng bởi cấp khác.', 'warning');
+                return;
+            }
+            levels[index] = { min: hours, name: name.trim(), caption: caption.trim() };
+            saveLevelArray(type, levels);
+            showToast('Đã Cập Nhật', `${label} đã được cập nhật.`, 'success');
+        }
+
+        function editStudyLevel(index) { editLevel('study', index); }
+        function editBreakLevel(index) { editLevel('break', index); }
+
+        function deleteLevel(type, index) {
+            const levels = getLevelArrayByType(type);
+            if (index === 0) {
+                showToast('Không thể xóa', 'Cấp đầu tiên (mốc 0 giờ) phải được giữ lại để hệ thống có cấp mặc định.', 'warning');
+                return;
+            }
+            const label = type === 'study' ? 'Cấp độ Học Tập' : 'Cảnh giới Tu Tiên';
+            if (!confirm(`Xóa ${label} số ${index + 1}? Các số thứ tự phía sau sẽ tự đánh lại.`)) return;
+            levels.splice(index, 1);
+            saveLevelArray(type, levels);
+            showToast('Đã Xóa', `${label} số ${index + 1} đã được xóa.`, 'info');
+        }
+
+        function deleteStudyLevel(index) { deleteLevel('study', index); }
+        function deleteBreakLevel(index) { deleteLevel('break', index); }
 
         /* COURSE MANAGEMENT */
         function handleCourseSelectChange() {
