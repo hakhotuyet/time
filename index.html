@@ -1526,12 +1526,13 @@
 
         function defaultTimeLedger() {
             return {
-                version: 2,
+                version: 3,
                 initialized: false,
                 deviceId: getDeviceId(),
                 studySeconds: 0,
                 breakSeconds: 0,
-                logs: {}
+                logs: {},
+                resets: {}
             };
         }
 
@@ -1541,6 +1542,7 @@
                 const parsed = raw ? JSON.parse(raw) : null;
                 const ledger = Object.assign(defaultTimeLedger(), parsed || {});
                 ledger.logs = ledger.logs || {};
+                ledger.resets = ledger.resets || {};
                 ledger.deviceId = getDeviceId();
                 return ledger;
             } catch (e) {
@@ -1593,6 +1595,23 @@
                     logs[k] = (logs[k] || 0) + (Number(v) || 0);
                 });
             });
+
+            // Reset là thao tác phá hủy có chủ ý: thay vì để lần sync sau
+            // khôi phục dữ liệu cũ, mỗi reset ghi một lượng cần loại bỏ theo
+            // từng log key. Dữ liệu học mới phát sinh sau reset vẫn được giữ.
+            const resets = ts.resets || {};
+            Object.values(resets).forEach(reset => {
+                Object.entries(reset?.logs || {}).forEach(([key, amount]) => {
+                    const before = Math.max(0, Number(logs[key]) || 0);
+                    const remove = Math.min(before, Math.max(0, Number(amount) || 0));
+                    if (remove <= 0) return;
+                    logs[key] = before - remove;
+                    const parts = key.split('|');
+                    if (parts[2] === 'study') study = Math.max(0, study - remove);
+                    else if (parts[2] === 'break') breakTime = Math.max(0, breakTime - remove);
+                });
+            });
+
             return { studySeconds: study, breakSeconds: breakTime, logs };
         }
 
@@ -1621,17 +1640,21 @@
                     baseLogs[ledgerLogKey(l)] = (baseLogs[ledgerLogKey(l)] || 0) + (Number(l.duration) || 0);
                 });
                 return {
-                    version: 2,
+                    version: 3,
                     initialized: true,
                     base: {
                         studySeconds: Number(cloudData?.userData?.studyXP) || 0,
                         breakSeconds: Number(cloudData?.userData?.breakXP) || 0,
                         logs: baseLogs
                     },
-                    devices: {}
+                    devices: {},
+                    resets: {}
                 };
             }
-            return JSON.parse(JSON.stringify(existing));
+            const result = JSON.parse(JSON.stringify(existing));
+            result.resets = result.resets || {};
+            result.devices = result.devices || {};
+            return result;
         }
 
         function buildDeviceContribution(localLedger, cloudTimeSync) {
@@ -1858,11 +1881,34 @@
             });
         }
 
+        function getMergedTimeSyncForLocal(cloudData, localLedger) {
+            const timeSync = prepareCloudTimeSync(cloudData);
+            timeSync.resets = timeSync.resets || {};
+            Object.entries(localLedger?.resets || {}).forEach(([id, reset]) => {
+                if (!timeSync.resets[id]) timeSync.resets[id] = JSON.parse(JSON.stringify(reset));
+            });
+            return timeSync;
+        }
+
+        function recordStatsReset(toRemoveList) {
+            if (!currentUserId || !toRemoveList || !toRemoveList.length) return;
+            const ledger = loadTimeLedger(currentUserId);
+            const resetLogs = {};
+            toRemoveList.forEach(l => {
+                const key = ledgerLogKey(l);
+                resetLogs[key] = (resetLogs[key] || 0) + (Number(l.duration) || 0);
+            });
+            const id = 'reset_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
+            ledger.resets = ledger.resets || {};
+            ledger.resets[id] = { id, createdAt: Date.now(), logs: resetLogs };
+            saveTimeLedger(currentUserId, ledger);
+        }
+
         async function mergeCloudData(cloudData) {
             // Khi nâng cấp từ phiên bản cũ chưa có timeSync, bảo toàn phần thời gian local
             // lớn hơn dữ liệu cloud bằng cách biến phần chênh lệch thành đóng góp của máy này.
-            let timeSync = prepareCloudTimeSync(cloudData);
             let localLedger = loadTimeLedger(currentUserId);
+            let timeSync = getMergedTimeSyncForLocal(cloudData, localLedger);
             if (!localLedger.initialized) {
                 const localStudy = Number(userData?.studyXP) || 0;
                 const localBreak = Number(userData?.breakXP) || 0;
@@ -1947,6 +1993,10 @@
                     const cloud = currentCloud || {};
                     const timeSync = prepareCloudTimeSync(cloud);
                     timeSync.devices = timeSync.devices || {};
+                    timeSync.resets = timeSync.resets || {};
+                    Object.entries(localLedger.resets || {}).forEach(([id, reset]) => {
+                        if (!timeSync.resets[id]) timeSync.resets[id] = JSON.parse(JSON.stringify(reset));
+                    });
                     timeSync.devices[deviceId] = buildDeviceContribution(localLedger, timeSync);
                     const merged = getMergedTimeFromCloud({ timeSync });
                     return Object.assign({}, cloud, {
@@ -3738,6 +3788,11 @@
                 if (l.type === 'study') studySecToDeduct += l.duration;
                 else if (l.type === 'break') breakSecToDeduct += l.duration;
             });
+
+            // Ghi nhận reset như một sự kiện phá hủy để lần đồng bộ sau không
+            // lấy dữ liệu cloud cũ kéo ngược lại. Reset vẫn hoạt động offline;
+            // khi online, sự kiện này sẽ được đẩy lên cloud và áp dụng toàn cục.
+            recordStatsReset(toRemoveList);
 
             userData.studyXP = Math.max(0, (userData.studyXP || 0) - studySecToDeduct);
             userData.breakXP = Math.max(0, (userData.breakXP || 0) - breakSecToDeduct);
