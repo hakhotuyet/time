@@ -1,6 +1,6 @@
-const CACHE = 'hocvienmagic-offline-v1';
+const CACHE = 'hocvienmagic-offline-v4';
 const SAME_ORIGIN = [
-  './hocvienmagic_fixed.html',
+  './index.html',
   './'
 ];
 const EXTERNAL = [
@@ -19,7 +19,12 @@ self.addEventListener('install', event => {
     await self.skipWaiting();
   })());
 });
-self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('activate', event => event.waitUntil((async () => {
+  const keep = new Set([CACHE]);
+  const keys = await caches.keys();
+  await Promise.all(keys.filter(k => k.startsWith('hocvienmagic-offline-') && !keep.has(k)).map(k => caches.delete(k)));
+  await self.clients.claim();
+})()));
 self.addEventListener('fetch', event => {
   const req = event.request;
   if (req.method !== 'GET') return;
@@ -30,7 +35,6 @@ self.addEventListener('fetch', event => {
     const cached = await cache.match(req, { ignoreVary: true });
     try {
       const fresh = await fetch(req);
-      // Cache static app shell and CDN libraries/fonts; Firebase data requests stay network-only.
       const isStatic = url.origin === location.origin || /cdn\.tailwindcss\.com|cdn\.jsdelivr\.net|gstatic\.com\/firebase|fonts\.googleapis\.com/.test(url.host + url.pathname);
       if (isStatic) cache.put(req, fresh.clone()).catch(() => {});
       return fresh;
